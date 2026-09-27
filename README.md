@@ -1,114 +1,73 @@
+# VoiceFlow — conversational inventory demo
 
-# Phone Call Conversational AI
+**A local, voice-driven sales-assistant proof of concept.** VoiceFlow records a short microphone utterance, transcribes it with Google Cloud Speech-to-Text, uses a Hugging Face-hosted language model to extract the requested product and quantity, checks a CSV inventory, and speaks the resulting answer with Google Cloud Text-to-Speech. A Streamlit interface ties the interaction together as a **simulated call**.
 
-## Overview
-This project is a proof-of-concept (PoC) conversational AI system that simulates phone calls. It integrates:
-- A **conversational agent** built using LangChain and Hugging Face models.
-- **Speech-to-Text (STT)** using Google Cloud Speech-to-Text for transcribing user input.
-- **Text-to-Speech (TTS)** using Google Cloud Text-to-Speech for generating responses.
-- **A Streamlit-based interface** that simulates phone call interactions.
+The interesting split is between **language understanding** and **deterministic action**: the LLM interprets the customer's words, while Python performs the stock check and inventory update.
 
-The application allows a user to enter a phone number, simulate a call, input speech, and receive AI-generated responses played back as audio.
+```text
+Local microphone (5-second recording)
+      ↓ Google Cloud Speech-to-Text
+Transcript
+      ↓ Hugging Face Mixtral endpoint: product + quantity JSON
+CSV inventory check → stock/alternative/confirmation response
+      ↓ Google Cloud Text-to-Speech
+MP3 playback via pygame on the machine running Streamlit
+```
 
----
+## Capabilities
 
-## Conversational Agent
-The conversational AI agent is built using:
-- **LangChain**: Provides structured agent reasoning and tool usage.
-- **Hugging Face Inference API**: Uses the `Mixtral-8x7B-Instruct-v0.1` model to generate responses based on user input.
-- **LangGraph with ReAct paradigm**: Allows dynamic decision-making in conversations.
+- Captures short spoken requests and transcribes them to English text.
+- Parses requests such as “I want two wireless earbuds” into product and quantity.
+- Checks `inventory.csv`; returns out-of-stock, insufficient-stock, or confirmation messages. Confirmed requests update the CSV's quantity-on-hand and quantity-sold fields.
+- Synthesizes the response as an MP3 using a Google Cloud WaveNet voice and plays it locally.
+- Offers a Streamlit **Simulate Call** UI; the phone-number field is a simulation cue, not a real telephone connection.
 
-The agent processes user queries by:
-1. Receiving transcribed text from the STT system.
-2. Checking inventory data from a CSV-based database.
-3. Confirming or denying orders based on stock availability.
-4. Suggesting alternatives for unavailable items.
-5. Responding with relevant information.
-6. Passing the response to the TTS system for audio playback.
+## Running the current code locally
 
----
+**Requirements:** Python 3.10+, a local microphone and audio output device, Google Cloud Speech-to-Text and Text-to-Speech access, a service-account JSON key, and access to the configured Hugging Face inference model. API use may incur charges.
 
-## System Logic
-### 1. Speech-to-Text (STT)
-- Uses Google Cloud Speech-to-Text.
-- Records user speech using `pyaudio`.
-- Converts the recorded speech into text and passes it to the AI agent.
+**A small configuration cleanup is required before the checked-in code can run with your credentials:**
 
-### 2. AI Response Generation
-- The transcribed text is processed by the LangChain-powered agent.
-- The agent retrieves information and formulates a response.
+1. In `model.py`, replace the literal `"your-access-token"` assignment with `os.environ["HUGGINGFACEHUB_API_TOKEN"]`. The current line overwrites any token you set in the shell.
+2. In `streamlit_ui.py`, replace the hardcoded service-account JSON filename passed to `get_speech_client(...)` with `os.environ["GOOGLE_APPLICATION_CREDENTIALS"]`. Make the same change in `audiotranscriber.py` if you run that file directly.
+3. In `tts_for_model.py`, remove the line that overwrites `GOOGLE_APPLICATION_CREDENTIALS` with a placeholder. Move the example `text_to_speech(...)` call at the bottom under `if __name__ == "__main__":` (or remove it), so importing the module does not call Google TTS before the UI starts.
+4. The repository's existing `requirements.txt` contains standard-library modules (`wave`, `threading`), omits `pygame` and `langchain-huggingface`, and includes package names that may not resolve. Correct it before using `pip install -r requirements.txt`. For the imports used by this code, a starting point is:
 
-### 3. Text-to-Speech (TTS)
-- Uses Google Cloud Text-to-Speech.
-- Converts the AI response into speech.
-- Saves the generated speech as an `MP3` file.
-
-### 4. Streamlit UI
-- Provides a simple interface to:
-  - Enter a phone number.
-  - Simulate a call.
-  - Record user speech.
-  - Play AI-generated responses.
-
----
-
-## Setup and Installation
-### Prerequisites
-- Python 3.10+
-- Google Cloud account with STT and TTS enabled
-- Hugging Face account with API access
-
-### Installation
-1. Clone the repository:
-   ```sh
-   git clone https://https://github.com/vunderscore/conversational_call_agent.git
-   cd conversational_call_agent
+   ```bash
+   python -m pip install streamlit pyaudio pygame pandas langchain langchain-huggingface huggingface-hub google-cloud-speech google-cloud-texttospeech google-auth
    ```
 
-2. Install dependencies:
-   ```sh
-   pip install -r requirements.txt
-   ```
+   PyAudio may also require the native PortAudio development library on your OS. Dependency versions are not pinned here; if current provider libraries change APIs, pin a tested environment.
 
-3. Set up Google Cloud credentials:
-   - Obtain a service account JSON key from Google Cloud.
-   - Save it in the project directory.
-   - Set the environment variable:
-     ```sh
-     export GOOGLE_APPLICATION_CREDENTIALS="your-key.json"
-     ```
+After those edits, run from the repository root:
 
-4. Configure Hugging Face API access:
-   - Set up your Hugging Face token:
-     ```sh
-     huggingface-cli login
-     ```
-
----
-
-## Running the Project
-To start the Streamlit interface:
-```sh
+```bash
+git clone https://github.com/vldzio/conversational-agent.git
+cd conversational-agent
+python -m venv .venv
+# macOS/Linux: source .venv/bin/activate
+# Windows PowerShell: .venv\Scripts\Activate.ps1
+# Install the corrected dependencies as noted above.
+export HUGGINGFACEHUB_API_TOKEN="your_hugging_face_token"
+export GOOGLE_APPLICATION_CREDENTIALS="/absolute/path/to/service-account.json"
 streamlit run streamlit_ui.py
 ```
-This will launch a web interface where users can enter a number, simulate a call, and interact with the AI.
 
----
+On Windows PowerShell, set environment variables using `$env:HUGGINGFACEHUB_API_TOKEN="..."` and `$env:GOOGLE_APPLICATION_CREDENTIALS="C:\\path\\to\\service-account.json"` instead of `export`.
 
-## File Structure
-```
-├── agent.py                 # Conversational AI agent logic
-├── audiotranscriber.py       # Handles STT using Google Cloud
-├── tts_for_model.py         # Handles TTS using Google Cloud
-├── streamlit_ui.py          # Streamlit interface for interaction
-├── requirements.txt         # Project dependencies
-├── README.md                # Project documentation
-```
+**Important:** the microphone recording and `pygame` playback happen on the computer running the Python server. Opening the page from another computer does **not** turn that browser into a phone or stream its microphone to the server. Keep service-account JSON and API tokens out of Git. Save a copy of `inventory.csv` before testing because confirmed requests modify it.
 
----
+## How the code is organized
 
-## Future Improvements
-- Implement real phone calling features with Twilio or other VoIP providers.
-- Improve real-time audio streaming instead of saving files.
-- Enhance agent capabilities for more complex sales interactions.
+| File | Responsibility |
+| --- | --- |
+| `streamlit_ui.py` | Simulated call UI, orchestrates audio → agent → speech |
+| `audiotranscriber.py` | Local PyAudio capture and Google STT transcription |
+| `model.py` | Hugging Face endpoint, request parsing, CSV-backed inventory action |
+| `tts_for_model.py` | Google Cloud TTS synthesis to `output.mp3` |
+| `inventory.csv` | Example products and mutable stock counts |
+| `tester.py` | Local command-line audio → agent → speech test |
 
+## Scope and next steps
+
+VoiceFlow shows how a voice interface can connect model-assisted request parsing with an explicit inventory operation. The checked-in implementation uses a **single LLM parsing call and ordinary Python functions**, not a LangGraph/ReAct agent; it simulates calls rather than placing them through a telephony provider. Useful next steps are browser-side audio capture, a real telephony integration, stronger validation before decrementing stock, credential configuration, and reproducible dependency pins.
