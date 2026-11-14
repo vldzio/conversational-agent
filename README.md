@@ -71,3 +71,13 @@ On Windows PowerShell, set environment variables using `$env:HUGGINGFACEHUB_API_
 ## Scope and next steps
 
 VoiceFlow shows how a voice interface can connect model-assisted request parsing with an explicit inventory operation. The checked-in implementation uses a **single LLM parsing call and ordinary Python functions**, not a LangGraph/ReAct agent; it simulates calls rather than placing them through a telephony provider. Useful next steps are browser-side audio capture, a real telephony integration, stronger validation before decrementing stock, credential configuration, and reproducible dependency pins.
+
+## Live web demo
+
+A browser version of VoiceFlow lives in [`demo/`](demo) (static UI, Vercel) with its API in [`demo_api/`](demo_api) (FastAPI, Hugging Face Space bundling a private [FreeLLMAPI](https://github.com/tashfeenahmed/freellmapi) gateway):
+
+* **Speech**: the browser's built-in speech recognition and voice synthesis replace Google Cloud STT/TTS (typing works everywhere).
+* **Understanding**: an LLM extracts `{product, quantity}` from the sentence (schema-validated, `temperature=0`).
+* **Action**: deterministic Python (`demo_api/voiceflow_core.py`, same rules as `model.check_inventory`) checks and updates a per-session copy of `inventory.csv`; the model never decides stock. A second LLM call turns the result into one spoken sentence.
+* Every LLM call is traced to a LangSmith project (`voiceflow-demo`); visitors get a daily allowance and can bring their own key.
+* Deploy: [`deploy/space/`](deploy/space) and [`vercel.json`](vercel.json) (set `DEMO_API_URL`). Tests: `pip install -r demo_api/requirements.txt pytest && pytest tests`.
