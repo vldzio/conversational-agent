@@ -1,10 +1,10 @@
-# Hugging Face Docker Space: private FreeLLMAPI gateway + VoiceFlow demo API in one container.
+# Render Docker web service: private FreeLLMAPI gateway + VoiceFlow demo API in one container.
 #
-#   public :7860  ->  demo_api (FastAPI: rate limits, BYO key, LangSmith tracing)
-#   private :3001 ->  FreeLLMAPI (bound to 127.0.0.1, never exposed)
+#   public  $PORT (Render sets it, default 10000) -> demo_api (FastAPI: rate limits, BYO key, LangSmith tracing)
+#   private 127.0.0.1:3001                        -> FreeLLMAPI (never exposed)
 #
-# The project code is cloned at build time, so the Space repo only needs this
-# Dockerfile + start.sh + README.md. Rebuild the Space to pick up new commits.
+# Build context is deploy/render/ (see render.yaml). The project code is cloned at build
+# time; redeploy on Render to pick up new commits.
 FROM ghcr.io/tashfeenahmed/freellmapi:latest
 
 USER root
@@ -28,7 +28,4 @@ ENV HOME=/home/node \
     FREEAPI_DB_PATH=/app/server/data/freeapi.db \
     DEMO_PROJECT=voiceflow \
     LANGSMITH_PROJECT=voiceflow-demo
-EXPOSE 7860
-HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:7860/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 CMD ["/srv/start.sh"]

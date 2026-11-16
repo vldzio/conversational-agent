@@ -38,6 +38,65 @@
     return data;
   };
 
+  function authHeaders(extra) {
+    const headers = Object.assign({ "Content-Type": "application/json" }, extra || {});
+    const key = store.get(KEY);
+    if (key) { headers["X-LLM-Api-Key"] = key; headers["X-LLM-Base-Url"] = store.get(URLK) || PROVIDERS[0][0]; }
+    return headers;
+  }
+
+  // POST JSON and read the reply as Server-Sent Events; onEvent(name, data) runs as each event arrives.
+  window.demoStream = async function (path, body, onEvent, signal) {
+    if (!api()) throw new Error("The demo API URL is not configured yet.");
+    let resp;
+    try { resp = await fetch(api() + path, { method: "POST", headers: authHeaders(), body: JSON.stringify(body || {}), signal }); }
+    catch (e) { if (e.name === "AbortError") throw e; throw new Error("Could not reach the demo API. It may be waking up from sleep (about a minute) - please try again."); }
+    if (!resp.ok || !(resp.headers.get("content-type") || "").includes("text/event-stream")) {
+      const text = await resp.text();
+      let data; try { data = JSON.parse(text); } catch (_) { data = { error: text.slice(0, 300) }; }
+      throw new Error(data.error || ("Request failed (" + resp.status + ")"));
+    }
+    const reader = resp.body.getReader(), dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf("\n\n")) !== -1) {
+        const block = buf.slice(0, i); buf = buf.slice(i + 2);
+        let name = "message", data = "";
+        block.split("\n").forEach(function (line) {
+          if (line.startsWith("event: ")) name = line.slice(7);
+          else if (line.startsWith("data: ")) data += line.slice(6);
+        });
+        let parsed; try { parsed = JSON.parse(data); } catch (_) { continue; }
+        if (name === "error") throw new Error(parsed.error || "The demo API reported an error.");
+        onEvent(name, parsed);
+      }
+    }
+  };
+
+  // Fire-and-forget POST (used to prepare a turn early); failures are ignored by the caller.
+  window.demoBackground = function (path, body, signal) {
+    if (!api()) return Promise.resolve(null);
+    return fetch(api() + path, { method: "POST", headers: authHeaders(), body: JSON.stringify(body || {}), signal })
+      .then(function (r) { return r.ok ? r.json() : null; }).catch(function () { return null; });
+  };
+
+  // POST for the agent's voice: returns the raw Response so the caller can read the audio as it streams in.
+  // The visitor's own LLM key is deliberately not sent: it does not pay for speech.
+  window.demoAudio = function (path, body, signal) {
+    if (!api()) return Promise.reject(new Error("The demo API URL is not configured yet."));
+    return fetch(api() + path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}), signal });
+  };
+
+  // Wake the API (free hosting sleeps when idle) and open the connection before the first turn.
+  window.demoWarm = function () {
+    if (!api()) return Promise.resolve(null);
+    return fetch(api() + "/").then(function (r) { return r.ok ? r.json() : null; }).catch(function () { return null; });
+  };
+
   document.addEventListener("DOMContentLoaded", function () {
     const bar = document.createElement("div");
     bar.className = "demo-bar";

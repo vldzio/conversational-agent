@@ -1,5 +1,5 @@
 // Vercel build step: write demo/config.js from environment variables.
-//   DEMO_API_URL   base URL of the Hugging Face Space API (required for live LLM features)
+//   DEMO_API_URL   base URL of the Render API (required for live LLM features)
 //   DEMO_TITLE / DEMO_SOURCE_URL / DEMO_NOTE  optional overrides
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";

@@ -48,13 +48,13 @@
       <div class="tablewrap"><table><thead><tr><th>Product</th><th class="n">In hand</th><th class="n">Sold</th></tr></thead><tbody id="inv"></tbody></table></div>
     </section>
   </div>
-  <p class="muted">The original project records audio locally and uses Google Cloud speech services; this web demo uses your browser's built-in speech recognition (Chrome/Edge/Safari) and voice synthesis instead.</p>
+  <p class="muted">The original project records audio locally and uses Google Cloud speech services; this web demo uses your browser's built-in speech recognition (Chrome/Edge/Safari) to hear you, and streams the agent's voice from Deepgram Aura-2 text-to-speech (it falls back to your browser's voice if that is unavailable).</p>
 </main>
-<script src="config.js"></script>
-<script src="byo.js"></script>
+<script src="config.js?v=2"></script>
+<script src="byo.js?v=4"></script>
 <script>
 const $ = (id) => document.getElementById(id);
-let sessionId = null, rec = null, busy = false, last = null;
+let sessionId = null, rec = null, busy = false, speculate = true;
 
 function renderInv(items, hitName){
   $("inv").innerHTML = "";
@@ -64,53 +64,150 @@ function renderInv(items, hitName){
     $("inv").appendChild(tr);
   });
 }
-function add(who, text, sub){
+function add(who, text, sub, email){
   const d = document.createElement("div"); d.className = "msg " + (who === "you" ? "you" : "agent");
-  d.textContent = text;
+  const at = email ? text.indexOf(email) : -1;
+  if (at < 0) d.textContent = text;
+  else {  // make the support address a mailto link inside the sentence
+    const a = document.createElement("a"); a.href = "mailto:" + email; a.textContent = email;
+    d.append(text.slice(0, at), a, text.slice(at + email.length));
+  }
   if (sub) { const s = document.createElement("small"); s.textContent = sub; d.appendChild(s); }
   $("chat").appendChild(d); $("chat").scrollTop = $("chat").scrollHeight;
 }
-function say(text){
-  if (!$("speak").checked || !("speechSynthesis" in window)) return;
-  window.speechSynthesis.cancel();
-  const u = new SpeechSynthesisUtterance(text); u.rate = 1.05; window.speechSynthesis.speak(u);
-}
-async function loadInv(){
-  try { const r = await demoPost("/inventory", {sessionId}); sessionId = r.sessionId; renderInv(r.inventory); } catch (e) { $("err").textContent = e.message; }
-}
-async function send(utterance){
-  utterance = (utterance || "").trim(); if (!utterance || busy) return;
-  busy = true; $("err").textContent = ""; $("send").disabled = true; add("you", utterance);
+
+/* Speech output. Everything that talks goes through speak()/stopSpeaking(), so the voice engine
+   can be replaced here without touching the turn logic. */
+const synth = "speechSynthesis" in window ? window.speechSynthesis : null;
+let voice = null, ttsOn = false, audioCtx = null, voiceCtl = null, voiceSources = [];
+function pickVoice(){ if (!synth) return; const vs = synth.getVoices(); voice = vs.find(v => v.lang === "en-US" && v.localService) || vs.find(v => v.lang && v.lang.startsWith("en")) || null; }
+if (synth) { pickVoice(); synth.addEventListener && synth.addEventListener("voiceschanged", pickVoice); }
+
+// The audio context must be created/resumed from a click, so every button that can lead to speech calls this.
+function unlockAudio(){
   try {
-    const r = await demoPost("/order", {utterance, sessionId});
-    sessionId = r.sessionId;
-    const p = r.parsed; const sub = p.product ? `understood: ${p.quantity ?? "?"} × ${p.product} · ${r.result.status}` : r.result.status;
-    add("agent", r.spoken, sub); say(r.spoken); renderInv(r.inventory, p.product);
-  } catch (e) { $("err").textContent = e.message; }
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === "suspended") audioCtx.resume();
+  } catch (_) { audioCtx = null; }
+}
+function stopSpeaking(){
+  if (voiceCtl) { voiceCtl.abort(); voiceCtl = null; }
+  voiceSources.forEach(s => { try { s.stop(); } catch (_) {} }); voiceSources = [];
+  if (synth) synth.cancel();
+}
+function speakInBrowser(text){
+  if (!synth) return;
+  const u = new SpeechSynthesisUtterance(text); u.rate = 1.05; if (voice) u.voice = voice; synth.speak(u);
+}
+// Streams the server's voice (16-bit mono PCM) and schedules each chunk as it arrives, so sound starts on the first chunk.
+async function playServerVoice(text, signal){
+  const resp = await demoAudio("/tts", {text, sessionId}, signal);
+  if (!resp.ok || !resp.body) throw new Error("voice unavailable (" + resp.status + ")");
+  const rate = parseInt(resp.headers.get("X-Sample-Rate") || "24000", 10);
+  const reader = resp.body.getReader();
+  let carry = new Uint8Array(0), at = 0;
+  for (;;) {
+    const {value, done} = await reader.read();
+    if (done) break;
+    const bytes = new Uint8Array(carry.length + value.length); bytes.set(carry); bytes.set(value, carry.length);
+    const usable = bytes.length - (bytes.length % 2); carry = bytes.slice(usable);
+    if (!usable) continue;
+    const pcm = new Int16Array(bytes.buffer.slice(0, usable)), f32 = new Float32Array(pcm.length);
+    for (let i = 0; i < pcm.length; i++) f32[i] = pcm[i] / 32768;
+    const buf = audioCtx.createBuffer(1, f32.length, rate); buf.copyToChannel(f32, 0);
+    const src = audioCtx.createBufferSource(); src.buffer = buf; src.connect(audioCtx.destination);
+    at = Math.max(at, audioCtx.currentTime + 0.03); src.start(at); at += buf.duration;
+    voiceSources.push(src); src.onended = () => { voiceSources = voiceSources.filter(s => s !== src); };
+  }
+}
+/* Everything that talks goes through speak()/stopSpeaking(). Uses the server voice when it is
+   configured and falls back to the browser's voice if that fails or runs out of quota. */
+async function speak(text){
+  if (!$("speak").checked || !text) return;
+  stopSpeaking();
+  if (!(ttsOn && audioCtx && sessionId)) { speakInBrowser(text); return; }
+  const ctl = voiceCtl = new AbortController();
+  try { await playServerVoice(text, ctl.signal); }
+  catch (e) { if (!ctl.signal.aborted) speakInBrowser(text); }
+}
+
+async function loadInv(){
+  try { const r = await demoPost("/inventory", {sessionId}); sessionId = r.sessionId; renderInv(r.inventory); return r; } catch (e) { $("err").textContent = e.message; return null; }
+}
+
+/* One turn. `since` is when the customer finished (final transcript or Send click); the readout under
+   the reply shows how long the agent took to start answering. */
+async function send(utterance, since){
+  utterance = (utterance || "").trim(); if (!utterance || busy) return;
+  since = since || performance.now();
+  busy = true; $("err").textContent = ""; $("send").disabled = true; add("you", utterance);
+  let parsed = null, result = null, said = false;
+  const reply = (text) => {
+    if (said) return; said = true;
+    const ms = Math.round(performance.now() - since);
+    const what = parsed && parsed.product ? `understood: ${parsed.quantity ?? "?"} × ${parsed.product} · ${result.status}` : result.status;
+    add("agent", text, `${what} · replied in ${ms} ms`, result.supportEmail); speak(text);
+  };
+  try {
+    await demoStream("/order/stream", {utterance, sessionId}, (name, d) => {
+      if (name === "parsed") { sessionId = d.sessionId; parsed = d.parsed; }
+      else if (name === "result") { result = d.result; renderInv(d.inventory, parsed && parsed.product); }
+      else if (name === "say") reply(d.spoken);
+    });
+    if (result && !said) reply(result.message);  // stream ended without a spoken line: the stock decision still stands
+  } catch (e) {
+    if (result && !said) reply(result.message); else $("err").textContent = e.message;
+  }
   finally { busy = false; $("send").disabled = false; $("text").focus(); }
 }
+
 $("start").addEventListener("click", () => {
   if (!$("phone").value.trim()) { $("err").textContent = "Enter a phone number (simulation only)."; return; }
   $("err").textContent = ""; $("chat").hidden = false; $("composer").hidden = false; $("start").hidden = true; $("end").hidden = false; $("chat").innerHTML = "";
-  const hello = "Hello! Thanks for calling. What would you like to order today?"; add("agent", hello); say(hello); loadInv(); $("text").focus();
+  unlockAudio();
+  const hello = "Hello! Thanks for calling. What would you like to order today?"; add("agent", hello);
+  loadInv().then(r => { if (r && r.greeting) speak(r.greeting); }); $("text").focus();
 });
-$("end").addEventListener("click", () => { $("chat").hidden = true; $("composer").hidden = true; $("start").hidden = false; $("end").hidden = true; window.speechSynthesis && window.speechSynthesis.cancel(); });
-$("send").addEventListener("click", () => { const v = $("text").value; $("text").value = ""; send(v); });
+$("end").addEventListener("click", () => { $("chat").hidden = true; $("composer").hidden = true; $("start").hidden = false; $("end").hidden = true; stopSpeaking(); });
+$("send").addEventListener("click", () => { unlockAudio(); const v = $("text").value; $("text").value = ""; send(v, performance.now()); });
 $("text").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); $("send").click(); } });
 
+/* Voice input. While the customer is still talking the browser reports interim text; once that text
+   has been steady for a moment the turn is prepared on the server (no stock is changed), so the answer
+   is ready by the time the browser decides the sentence is finished. */
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+const STABLE_MS = 250, MAX_PREPARES = 2;
 if (!SR) { $("mic").hidden = true; $("mic-note").hidden = false; $("mic-note").textContent = "Voice input is not supported in this browser; type your order instead."; }
 else {
   $("mic").addEventListener("click", () => {
     if (rec) { rec.stop(); return; }
-    rec = new SR(); rec.lang = "en-US"; rec.interimResults = false; rec.maxAlternatives = 1;
+    unlockAudio(); stopSpeaking();  // the customer is talking: stop the agent's voice
+    rec = new SR(); rec.lang = "en-US"; rec.interimResults = true; rec.maxAlternatives = 1;
+    let timer = null, prepares = 0, lastPrepared = "", done = false;
+    const prepare = (text) => {
+      if (!speculate || !sessionId || done || prepares >= MAX_PREPARES || text === lastPrepared || text.split(/\s+/).length < 3) return;
+      prepares++; lastPrepared = text;
+      demoBackground("/order/prepare", {utterance: text, sessionId}).then(r => {
+        if (r && r.spoken && ttsOn) demoBackground("/tts", {text: r.spoken, sessionId, prefetch: true});  // audio ready before the sentence ends
+      });
+    };
     $("mic").classList.add("rec");
-    rec.onresult = (e) => { send(e.results[0][0].transcript); };
+    rec.onresult = (e) => {
+      let text = "", final = false;
+      for (const r of e.results) { text += r[0].transcript; if (r.isFinal) final = true; }
+      text = text.trim(); clearTimeout(timer);
+      if (final) { done = true; $("text").value = ""; send(text, performance.now()); return; }
+      $("text").value = text;
+      timer = setTimeout(() => prepare(text), STABLE_MS);
+    };
     rec.onerror = (e) => { $("err").textContent = "Microphone: " + (e.error === "not-allowed" ? "permission denied. You can type instead." : e.error); };
-    rec.onend = () => { $("mic").classList.remove("rec"); rec = null; };
+    rec.onend = () => { clearTimeout(timer); $("mic").classList.remove("rec"); rec = null; };
     rec.start();
   });
 }
+
+// Wake the API and open the connection before the first turn; also learn whether early preparation is on.
+demoWarm().then(info => { if (info && info.speculate === false) speculate = false; if (info && info.tts) ttsOn = true; });
 </script>
 </body>
 </html>
