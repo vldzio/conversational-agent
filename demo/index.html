@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-app="voice">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -10,19 +10,24 @@
   .layout{display:grid;gap:16px;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
   @media (max-width:760px){.layout{grid-template-columns:1fr}}
   .chat{height:340px;overflow:auto;display:flex;flex-direction:column;gap:8px;padding:4px}
-  .msg{max-width:88%;padding:8px 12px;border-radius:12px;border:1px solid var(--border);background:var(--bg)}
-  .msg.you{align-self:flex-end;background:var(--accent);color:var(--accent-text);border-color:var(--accent)}
+  .msg{max-width:88%;padding:10px 14px;border-radius:14px;overflow-wrap:anywhere;border:1px solid var(--border);background:var(--bg)}
+  .msg.you{border-bottom-right-radius:4px;align-self:flex-end;background:var(--accent);color:var(--accent-text);border-color:var(--accent)}
   .msg small{display:block;opacity:.75;margin-top:2px}
   .row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:10px}
-  .row input{flex:1;min-width:160px}
+  .row input:not([type=checkbox]){flex:1;min-width:160px}
+  .chat{scroll-behavior:smooth;border:1px solid var(--border);border-radius:var(--r);background:var(--bg);padding:12px}
+  .msg.agent{background:var(--card)}
+  #mic{min-width:44px;padding:0 12px}
   #mic.rec{background:var(--bad);border-color:var(--bad)}
-  table{border-collapse:collapse;width:100%;font-size:14px}th,td{padding:5px 8px;border-bottom:1px solid var(--border);text-align:left}
+  table{border-collapse:collapse;width:100%;font-size:14px}th,td{padding:8px 10px;border-bottom:1px solid var(--border);text-align:left}
   td.n{text-align:right;font-variant-numeric:tabular-nums}tr.hit{background:var(--code)}
   .tablewrap{max-height:380px;overflow:auto}
 </style>
 </head>
 <body>
-<main>
+<a class="skip" href="#main">Skip to content</a>
+<main id="main">
+  <p class="eyebrow">Live demo · voice ordering agent</p>
   <h1>VoiceFlow</h1>
   <p class="lead">A simulated sales call. Say or type an order such as <em>"I'd like two wireless chargers"</em>. An LLM extracts the product and quantity; plain code checks the stock and confirms, so the model never decides what is in stock.</p>
 
@@ -32,11 +37,11 @@
       <label for="phone">Phone number (simulation only, no real call is placed)</label>
       <input id="phone" value="+1 555 0100" inputmode="tel">
       <div class="row"><button id="start" type="button">Start call</button><button id="end" class="secondary" type="button" hidden>End call</button>
-        <label style="margin:0"><input id="speak" type="checkbox" checked style="width:auto"> Speak replies</label></div>
+        <label style="margin:0;display:inline-flex;align-items:center;gap:8px;min-height:44px"><input id="speak" type="checkbox" checked style="width:auto"> Speak replies</label></div>
       <div id="chat" class="chat" aria-live="polite" style="margin-top:12px" hidden></div>
       <div id="composer" class="row" hidden>
-        <button id="mic" type="button" title="Hold a short sentence, then pause">🎤</button>
-        <input id="text" placeholder="Type what the customer says…" autocomplete="off">
+        <button id="mic" type="button" aria-label="Speak (microphone)" title="Say a short sentence, then pause">🎤</button>
+        <input id="text" aria-label="Customer message" placeholder="Type what the customer says…" autocomplete="off">
         <button id="send" type="button">Send</button>
       </div>
       <p id="credits" class="muted" style="margin:8px 0 0" aria-live="polite"></p>
@@ -51,6 +56,7 @@
   </div>
   <p class="muted">The original project records audio locally and uses Google Cloud speech services; this web demo uses your browser's built-in speech recognition (Chrome/Edge/Safari) to hear you, and streams the agent's voice from Deepgram Aura-2 text-to-speech (it falls back to your browser's voice if that is unavailable).</p>
 </main>
+<footer class="site">Built by Hariharan · <a href="https://hariharan5862.vercel.app">More projects in the portfolio</a></footer>
 <script src="config.js?v=2"></script>
 <script src="byo.js?v=5"></script>
 <script>
