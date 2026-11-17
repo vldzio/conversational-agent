@@ -2,7 +2,6 @@ import os
 from google.cloud import texttospeech
 import time
 
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "your-json-file-path"
 
 
 
@@ -51,4 +50,5 @@ def text_to_speech(text, filename="output.mp3"):
     print(f"✅ Audio saved at: {output_path}")
 
 # Example usage
-text_to_speech("Hello! This is a test of Google Cloud Text-to-Speech with a more natural voice.")
+if __name__ == "__main__":
+    text_to_speech("Hello! This is a test of Google Cloud Text-to-Speech with a more natural voice.")
