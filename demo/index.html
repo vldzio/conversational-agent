@@ -39,6 +39,7 @@
         <input id="text" placeholder="Type what the customer says…" autocomplete="off">
         <button id="send" type="button">Send</button>
       </div>
+      <p id="credits" class="muted" style="margin:8px 0 0" aria-live="polite"></p>
       <div id="err" class="err" role="alert"></div>
       <p id="mic-note" class="muted" hidden></p>
     </section>
@@ -51,7 +52,7 @@
   <p class="muted">The original project records audio locally and uses Google Cloud speech services; this web demo uses your browser's built-in speech recognition (Chrome/Edge/Safari) to hear you, and streams the agent's voice from Deepgram Aura-2 text-to-speech (it falls back to your browser's voice if that is unavailable).</p>
 </main>
 <script src="config.js?v=2"></script>
-<script src="byo.js?v=4"></script>
+<script src="byo.js?v=5"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 let sessionId = null, rec = null, busy = false, speculate = true;
@@ -131,6 +132,15 @@ async function speak(text){
   catch (e) { if (!ctl.signal.aborted) speakInBrowser(text); }
 }
 
+/* Free allowance: the API says how many credits are left today; a turn costs about 2. Hidden when the
+   visitor uses their own key (no shared limit applies). */
+function showCredits(n){
+  const el = $("credits");
+  if (typeof n !== "number") { el.textContent = ""; return; }
+  el.textContent = n < 2 ? "No free turns left today. Add your own LLM key (top bar) to keep going, or come back tomorrow (UTC)."
+                         : `About ${Math.floor(n / 2)} free turns left today.`;
+}
+
 async function loadInv(){
   try { const r = await demoPost("/inventory", {sessionId}); sessionId = r.sessionId; renderInv(r.inventory); return r; } catch (e) { $("err").textContent = e.message; return null; }
 }
@@ -153,10 +163,12 @@ async function send(utterance, since){
       if (name === "parsed") { sessionId = d.sessionId; parsed = d.parsed; }
       else if (name === "result") { result = d.result; renderInv(d.inventory, parsed && parsed.product); }
       else if (name === "say") reply(d.spoken);
+      else if (name === "done") showCredits(d.freeRemaining);
     });
     if (result && !said) reply(result.message);  // stream ended without a spoken line: the stock decision still stands
   } catch (e) {
     if (result && !said) reply(result.message); else $("err").textContent = e.message;
+    if (/free-demo limit|quota is used up/i.test(e.message)) showCredits(0);
   }
   finally { busy = false; $("send").disabled = false; $("text").focus(); }
 }

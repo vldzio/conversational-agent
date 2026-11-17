@@ -108,22 +108,35 @@ def validate_byo(api_key: str | None, base_url: str | None) -> tuple[str, str] |
     return api_key.strip(), url
 
 
+def _counters(ip: str, scope: str) -> tuple[tuple[int, int, int], list[tuple[str, int]]]:
+    """((per-minute, per-day, global) limits, [(key, ttl)] for minute / visitor-day / global) for a scope."""
+    voice = scope == "tts"
+    limits = (TTS_PER_IP_PER_MIN, TTS_PER_IP_DAILY, TTS_GLOBAL_DAILY) if voice else (PER_IP_PER_MIN, PER_IP_DAILY, GLOBAL_DAILY)
+    pre = f"rl:{PROJECT}:tts" if voice else f"rl:{PROJECT}"
+    day, ttl = _day(), _seconds_to_midnight_utc()
+    return limits, [(f"{pre}:min:{int(time.time() // 60)}:{ip}", 90), (f"{pre}:ip:{day}:{ip}", ttl), (f"{pre}:global:{day}", ttl)]
+
+
+def refund(ip: str, cost: int, scope: str = "llm") -> None:
+    """Give credits back when the work they paid for failed (e.g. the model pool was unavailable)."""
+    if cost <= 0:
+        return
+    try:
+        _incr_many([(key, -cost, ttl) for key, ttl in _counters(ip, scope)[1]])
+    except Exception:  # noqa: BLE001 - a failed refund must never break the response
+        pass
+
+
 def check(ip: str, cost: int, byo: bool, scope: str = "llm") -> Decision:
     """Admit a request. Scope "llm" is metered in credits, "tts" (voice) in characters; each has its own counters."""
     if byo or cost <= 0:
         return Decision(True, byo=byo)
     voice = scope == "tts"
-    per_min, per_day, per_all = (TTS_PER_IP_PER_MIN, TTS_PER_IP_DAILY, TTS_GLOBAL_DAILY) if voice else (PER_IP_PER_MIN, PER_IP_DAILY, GLOBAL_DAILY)
-    pre = f"rl:{PROJECT}:tts" if voice else f"rl:{PROJECT}"
+    (per_min, per_day, per_all), counters = _counters(ip, scope)
     try:
-        ttl = _seconds_to_midnight_utc()
-        day = _day()
-        global_key = f"{pre}:global:{day}"
-        minute_used, ip_used, global_used = _incr_many([
-            (f"{pre}:min:{int(time.time() // 60)}:{ip}", cost, 90),
-            (f"{pre}:ip:{day}:{ip}", cost, ttl),
-            (global_key, cost, ttl),
-        ])
+        ttl = counters[2][1]
+        global_key = counters[2][0]
+        minute_used, ip_used, global_used = _incr_many([(key, cost, t) for key, t in counters])
         denied = None
         if per_min > 0 and minute_used > per_min:
             denied = "Too many requests too quickly. Wait a minute and try again."

@@ -24,6 +24,8 @@ services:
       - { key: SUPPORT_EMAIL, sync: false }         # shown to callers who ask to cancel an order
       - { key: CORS_ORIGINS, sync: false }          # the Vercel origin
       # Limits are in credits (1 credit = about 1 LLM call; a turn costs 2, a prepared voice turn 1 + 1).
+      # Which header carries the real visitor IP (Render is behind Cloudflare). Check GET /whoami after deploying.
+      - { key: CLIENT_IP_HEADER, value: "cf-connecting-ip" }
       - { key: RL_PER_IP_PER_MIN, value: "20" }
       - { key: RL_PER_IP_DAILY, value: "40" }
       - { key: RL_GLOBAL_DAILY, value: "1000" }

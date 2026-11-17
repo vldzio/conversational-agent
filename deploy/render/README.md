@@ -13,6 +13,7 @@ One Docker web service = private [FreeLLMAPI](https://github.com/tashfeenahmed/f
 | `TTS_PER_IP_PER_MIN` / `TTS_PER_IP_DAILY` / `TTS_GLOBAL_DAILY` | voice limits in characters (about 60 per reply): defaults 800/min and 8000/day per visitor, 150000/day overall |
 | `SUPPORT_EMAIL` | address shown when a caller asks to cancel an order (cancellations are never processed by the agent) |
 | `CORS_ORIGINS` | the frontend origin |
+| `CLIENT_IP_HEADER` | header that carries the visitor IP, default `cf-connecting-ip` (Render is behind Cloudflare and only appends to `X-Forwarded-For`). `GET /whoami` shows how a request is identified |
 | `RL_PER_IP_PER_MIN` / `RL_PER_IP_DAILY` / `RL_GLOBAL_DAILY` | credits (about one LLM call each): defaults 20/min and 40/day per visitor, 1000/day overall (UTC) |
 | `LLM_MODELS` | models tried in order, fastest first; `name@low` sets reasoning effort. Default `qwen3.8-27b,gpt-oss-120b@low,gpt-oss-20b@low,auto` |
 | `SPECULATE` | `1` (default) prepares a voice turn while the caller is still talking; `0` turns it off to save credits |

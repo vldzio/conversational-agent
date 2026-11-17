@@ -515,3 +515,83 @@ def test_a_failed_prefetch_falls_back_to_a_live_request(monkeypatch):
         return [c async for c in audio]
 
     assert asyncio.run(scenario()) == [b"\x01\x00" * 10] and len(attempts) == 2
+
+
+# ---------------------------------------------------------------- who is the visitor (rate-limit identity)
+
+def test_visitor_is_taken_from_the_cloudflare_header_not_from_forwarded_for(client):
+    h = {"CF-Connecting-IP": "203.0.113.7", "X-Forwarded-For": "6.6.6.6, 172.70.1.1"}
+    r = client.get("/whoami", headers=h).json()
+    assert r["ip"] == "203.0.113.7" and r["source"] == "cf-connecting-ip"
+
+
+def test_without_the_header_it_falls_back_to_the_last_forwarded_entry_then_the_socket(client):
+    assert client.get("/whoami", headers={"X-Forwarded-For": "6.6.6.6, 198.51.100.9"}).json()["ip"] == "198.51.100.9"
+    assert client.get("/whoami").json()["source"] == "socket"
+
+
+def test_the_header_can_be_changed_or_switched_off(client, monkeypatch):
+    monkeypatch.setenv("CLIENT_IP_HEADER", "True-Client-IP")
+    assert client.get("/whoami", headers={"True-Client-IP": "192.0.2.5", "CF-Connecting-IP": "1.1.1.1"}).json()["ip"] == "192.0.2.5"
+    monkeypatch.setenv("CLIENT_IP_HEADER", "")
+    assert client.get("/whoami", headers={"CF-Connecting-IP": "1.1.1.1", "X-Forwarded-For": "9.9.9.9"}).json()["ip"] == "9.9.9.9"
+
+
+def test_one_visitor_cannot_dodge_the_limit_by_changing_forwarded_for(client, monkeypatch):
+    monkeypatch.setattr(guard, "PER_IP_DAILY", 2)
+    stub(monkeypatch, {"product_name": "Selfie Stick", "order_qty": 1})
+    codes = [client.post("/order", json={"utterance": "x"}, headers={"CF-Connecting-IP": "203.0.113.7", "X-Forwarded-For": f"10.0.0.{i}"}).status_code
+             for i in range(3)]
+    assert codes == [200, 429, 429]
+    other = client.post("/order", json={"utterance": "x"}, headers={"CF-Connecting-IP": "203.0.113.8"})
+    assert other.status_code == 200  # a different visitor has their own allowance
+
+
+# ---------------------------------------------------------------- visible allowance and refunds
+
+def ip_credits_used():
+    return sum(v for k, (v, _) in guard._mem.items() if ":ip:" in k and ":tts:" not in k)
+
+
+def test_responses_say_how_much_of_the_free_allowance_is_left(client, monkeypatch):
+    monkeypatch.setattr(guard, "PER_IP_DAILY", 10)
+    stub(monkeypatch, {"product_name": "Selfie Stick", "order_qty": 1})
+    assert order(client, "x").json()["freeRemaining"] == 8  # 10 - one turn (2 credits)
+    assert order(client, "x").json()["freeRemaining"] == 6
+    ev = dict(events(client, "x"))
+    assert ev["done"]["freeRemaining"] == 4 and ev["done"]["timings"]["limiter"] >= 0
+
+
+def test_a_visitors_own_key_has_no_allowance_to_show(client, monkeypatch):
+    stub(monkeypatch, {"product_name": "Selfie Stick", "order_qty": 1})
+    r = client.post("/order", json={"utterance": "x"}, headers={"X-LLM-Api-Key": "sk-mine"}).json()
+    assert "freeRemaining" not in r and ip_credits_used() == 0
+
+
+def test_a_failed_model_call_gives_the_credits_back(client, monkeypatch):
+    monkeypatch.setattr(guard, "PER_IP_DAILY", 2)  # room for exactly one turn
+
+    def down(*a, **k):
+        raise llm.LLMUnavailable("pool busy")
+
+    monkeypatch.setattr(llm, "chat_json", down)
+    assert order(client, "x").status_code == 503 and ip_credits_used() == 0
+    assert next(v for k, (v, _) in guard._mem.items() if ":global:" in k and ":tts:" not in k) == 0
+    stub(monkeypatch, {"product_name": "Selfie Stick", "order_qty": 1})
+    assert order(client, "x").status_code == 200  # still allowed: the failed attempt was free
+
+
+def test_a_failed_streamed_turn_is_refunded_but_a_completed_stock_decision_is_not(client, monkeypatch):
+    monkeypatch.setattr(guard, "PER_IP_DAILY", 100)
+
+    def down(*a, **k):
+        raise llm.LLMUnavailable("pool busy")
+
+    monkeypatch.setattr(llm, "chat_json", down)
+    r = client.post("/order/stream", json={"utterance": "x"})
+    assert "event: error" in r.text and ip_credits_used() == 0  # failed before any stock decision
+    # the stock decision was made and sent, only the spoken rewrite failed: the turn happened, so it is paid for
+    monkeypatch.setattr(llm, "chat_json", lambda *a, **k: {"product_name": "Selfie Stick", "order_qty": 1})
+    monkeypatch.setattr(llm, "text", lambda *a, **k: (_ for _ in ()).throw(llm.LLMUnavailable("busy")))
+    dict(events(client, "a selfie stick"))
+    assert ip_credits_used() == 2

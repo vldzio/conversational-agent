@@ -46,6 +46,19 @@ def create_app(title: str, *, on_startup: Callable[[], None] | None = None, info
             **(info() if info else {}),
         }
 
+    @app.get("/whoami")
+    def whoami(req: Request) -> dict[str, Any]:
+        """Echo how THIS request is identified for rate limiting (only the caller's own headers)."""
+        ip, source = client_ip_source(req)
+        return {
+            "ip": ip,
+            "source": source,
+            "cfConnectingIp": req.headers.get("cf-connecting-ip"),
+            "trueClientIp": req.headers.get("true-client-ip"),
+            "xForwardedFor": req.headers.get("x-forwarded-for"),
+            "socket": req.client.host if req.client else None,
+        }
+
     @app.get("/healthz")
     def healthz() -> dict[str, str]:
         return {"status": "ok"}
@@ -66,11 +79,29 @@ def _connect_and_warm() -> None:
         pass
 
 
-def client_ip(req: Request) -> str:
-    # The platform proxy appends the real client IP as the LAST entry; earlier entries are client-supplied
-    # and spoofable, so never use them for rate limiting.
+def client_ip_source(req: Request) -> tuple[str, str]:
+    """Who is calling, and which header said so: ``(ip, source)``.
+
+    Render sits behind Cloudflare and only APPENDS to ``X-Forwarded-For``, so its last entry is a proxy
+    hop, not the visitor, and its first entry is client-supplied. The header Cloudflare sets itself
+    (``CF-Connecting-IP``, overwritten at the edge) is what identifies the visitor there. The header is
+    configurable with ``CLIENT_IP_HEADER`` (set it empty to ignore it). Without it we fall back to the
+    last ``X-Forwarded-For`` entry (right for platforms whose proxy appends the real client last), then to
+    the socket address.
+    """
+    name = os.environ.get("CLIENT_IP_HEADER", "cf-connecting-ip").strip().lower()
+    if name:
+        v = req.headers.get(name)
+        if v and v.strip():
+            return v.split(",")[0].strip(), name
     fwd = req.headers.get("x-forwarded-for")
-    return fwd.split(",")[-1].strip() if fwd else (req.client.host if req.client else "unknown")
+    if fwd and fwd.strip():
+        return fwd.split(",")[-1].strip(), "x-forwarded-for (last)"
+    return (req.client.host if req.client else "unknown"), "socket"
+
+
+def client_ip(req: Request) -> str:
+    return client_ip_source(req)[0]
 
 
 def _flush_traces() -> None:
@@ -100,8 +131,8 @@ def _traced(fn: Callable[[], Any], name: str, byo: bool) -> Callable[[], Any]:
     return fn
 
 
-async def _admit(req: Request, cost: int, scope: str = "llm") -> tuple[tuple[str, str] | None, JSONResponse | None, int]:
-    """Validate a BYO key and apply the limits. Returns (byo, refusal, limiter_ms)."""
+async def _admit(req: Request, cost: int, scope: str = "llm") -> tuple[tuple[str, str] | None, JSONResponse | None, int, guard.Decision | None]:
+    """Validate a BYO key and apply the limits. Returns (byo, refusal, limiter_ms, decision)."""
     import anyio
 
     byo = None
@@ -109,13 +140,13 @@ async def _admit(req: Request, cost: int, scope: str = "llm") -> tuple[tuple[str
         try:
             byo = guard.validate_byo(req.headers.get("x-llm-api-key"), req.headers.get("x-llm-base-url"))
         except ValueError as exc:
-            return None, JSONResponse({"error": str(exc)}, status_code=400), 0
+            return None, JSONResponse({"error": str(exc)}, status_code=400), 0, None
     t0 = time.perf_counter()
     decision = await anyio.to_thread.run_sync(guard.check, client_ip(req), cost, bool(byo), scope)
     limiter_ms = round((time.perf_counter() - t0) * 1000)
     if not decision.allowed:
-        return byo, JSONResponse({"error": decision.message, "rateLimited": True}, status_code=429), limiter_ms
-    return byo, None, limiter_ms
+        return byo, JSONResponse({"error": decision.message, "rateLimited": True}, status_code=429), limiter_ms, decision
+    return byo, None, limiter_ms, decision
 
 
 async def guarded(req: Request, cost: int, fn: Callable[[], Any], *, name: str) -> JSONResponse:
@@ -125,9 +156,10 @@ async def guarded(req: Request, cost: int, fn: Callable[[], Any], *, name: str) 
     """
     import anyio
 
-    byo, refusal, limiter_ms = await _admit(req, cost)
+    byo, refusal, limiter_ms, decision = await _admit(req, cost)
     if refusal:
         return refusal
+    ip = client_ip(req)
 
     def run() -> Any:
         with llm.byo(byo[0] if byo else None, byo[1] if byo else None):
@@ -138,8 +170,12 @@ async def guarded(req: Request, cost: int, fn: Callable[[], Any], *, name: str) 
     try:
         result = await anyio.to_thread.run_sync(lambda: ctx.run(run))
         total = round((time.perf_counter() - t0) * 1000)
+        if isinstance(result, dict) and decision and decision.remaining is not None:
+            result = {**result, "freeRemaining": decision.remaining}  # credits left today, shown by the page
         return JSONResponse(result, headers={"Server-Timing": f"limiter;dur={limiter_ms}, handler;dur={total}"})
     except llm.LLMUnavailable as exc:
+        if not byo:
+            guard.refund(ip, cost)  # the model pool failed: that attempt should not use up the visitor's allowance
         return JSONResponse({"error": str(exc)}, status_code=503)
     except ValueError as exc:  # bad input detected by handlers
         return JSONResponse({"error": str(exc)}, status_code=400)
@@ -149,7 +185,7 @@ async def guarded(req: Request, cost: int, fn: Callable[[], Any], *, name: str) 
 
 async def admit_voice(req: Request, chars: int) -> JSONResponse | None:
     """Apply the voice limits (characters). Returns a 429 response, or None when admitted."""
-    _, refusal, _ = await _admit(req, chars, "tts")
+    _, refusal, _, _ = await _admit(req, chars, "tts")
     return refusal
 
 
@@ -166,9 +202,18 @@ async def guarded_stream(
     """
     import anyio
 
-    byo, refusal, limiter_ms = await _admit(req, cost)
+    byo, refusal, limiter_ms, decision = await _admit(req, cost)
     if refusal:
         return refusal
+    ip = client_ip(req)
+    left = decision.remaining if decision else None
+    settled = False  # once the stock decision has been sent the turn has really happened and is not refunded
+
+    def finish(data: dict[str, Any]) -> dict[str, Any]:
+        out = {**data, "timings": {**data.get("timings", {}), "limiter": limiter_ms}}
+        if left is not None:
+            out["freeRemaining"] = left  # credits left today, shown by the page
+        return out
 
     # Each step of the iterator runs in a worker thread but inside this one context, so the BYO key
     # (a context variable) stays visible for the whole turn and never leaks into another request.
@@ -181,12 +226,14 @@ async def guarded_stream(
         return list(fn())
 
     async def body():
+        nonlocal settled
         try:
             if llm.tracing_enabled():
                 # a traced run needs a plain call, so the events are produced first and then sent
                 events = await anyio.to_thread.run_sync(lambda: ctx.run(_traced(collect, name, bool(byo))))
                 for event, data in events:
-                    yield _sse(event, data)
+                    settled = settled or event == "result"
+                    yield _sse(event, finish(data) if event == "done" else data)
             else:
                 it = ctx.run(fn)
                 while True:
@@ -194,10 +241,11 @@ async def guarded_stream(
                     if item is end:
                         break
                     event, data = item
-                    if event == "done":
-                        data = {**data, "timings": {**data.get("timings", {}), "limiter": limiter_ms}}
-                    yield _sse(event, data)
+                    settled = settled or event == "result"
+                    yield _sse(event, finish(data) if event == "done" else data)
         except llm.LLMUnavailable as exc:
+            if not settled and not byo:
+                guard.refund(ip, cost)  # failed before anything happened: give the credits back
             yield _sse("error", {"error": str(exc)})
         except ValueError as exc:
             yield _sse("error", {"error": str(exc)})
