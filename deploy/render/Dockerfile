@@ -15,6 +15,10 @@ RUN apt-get update \
 ARG REPO=https://github.com/vldzio/conversational-agent.git
 ARG REF=demo-ready
 ARG CACHEBUST=1
+# Fetching the branch's current commit id (a tiny JSON file) changes whenever the branch gets a new commit,
+# which invalidates the cache of the clone below. Without it Docker would reuse the OLD clone on every
+# redeploy because the Dockerfile text itself has not changed.
+ADD https://api.github.com/repos/vldzio/conversational-agent/git/refs/heads/demo-ready /tmp/branch-head.json
 RUN git clone --depth 1 --branch "${REF}" "${REPO}" /srv/app \
  && python3 -m venv /opt/venv \
  && /opt/venv/bin/pip install --no-cache-dir -r /srv/app/demo_api/requirements.txt \
