@@ -1,15 +1,15 @@
 import os
 import pyaudio
 import wave
-import threading
 from google.cloud import speech_v1p1beta1 as speech
 from google.oauth2 import service_account
 import time
 
-def get_speech_client(json_path='your-json-file-path'):
+def get_speech_client(json_path=None):
     """
     Get Speech Client using local JSON key
     """
+    json_path = json_path or os.environ["GOOGLE_APPLICATION_CREDENTIALS"]
     credentials = service_account.Credentials.from_service_account_file(
         json_path
     )
@@ -97,7 +97,7 @@ def transcribe_audio(client, audio_file):
     return " ".join(transcripts)
 
 def main():
-    json_path = 'astral-trees-452808-p1-203f79031f31.json'
+    json_path = os.environ["GOOGLE_APPLICATION_CREDENTIALS"]
     client = get_speech_client(json_path)
     
     recorder = AudioRecorder(

@@ -23,7 +23,7 @@ def main():
             st.write("Calling...")
             
             # Initialize STT Client
-            client = audiotranscriber.get_speech_client('astral-trees-452808-p1-203f79031f31.json')
+            client = audiotranscriber.get_speech_client(os.environ["GOOGLE_APPLICATION_CREDENTIALS"])
             
             # Record audio
             st.write("Listening for input...")

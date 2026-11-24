@@ -1,0 +1,12 @@
+# Credentials
+.env
+*.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Generated audio
+*.wav
+*.mp3

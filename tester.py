@@ -1,11 +1,12 @@
 
+import os
 import audiotranscriber
 from model import agent
 from tts_for_model import text_to_speech
 
 def main():
     # Initialize Google Speech Client
-    client = audiotranscriber.get_speech_client('astral-trees-452808-p1-203f79031f31.json')
+    client = audiotranscriber.get_speech_client(os.environ["GOOGLE_APPLICATION_CREDENTIALS"])
 
     # Initialize and record audio
     recorder = audiotranscriber.AudioRecorder(
