@@ -4,7 +4,7 @@ import json
 import pandas as pd
 from langchain.tools import Tool
 
-HUGGINGFACEHUB_API_TOKEN = os.environ["HUGGINGFACEHUB_API_TOKEN"]
+HUGGINGFACEHUB_API_TOKEN = os.environ.get("HUGGINGFACEHUB_API_TOKEN", "")
 
 
 llm = HuggingFaceEndpoint(

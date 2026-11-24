@@ -1,12 +1,16 @@
 # Credentials
 .env
-*.json
+*service-account*.json
+credentials*.json
 
 # Python
 __pycache__/
 *.pyc
 .venv/
+.pytest_cache/
 
 # Generated audio
 *.wav
 *.mp3
+
+.vercel

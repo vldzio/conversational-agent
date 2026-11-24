@@ -1,0 +1,34 @@
+# Render Blueprint. Fill the `sync: false` values in the Render dashboard (never commit them).
+services:
+  - type: web
+    name: voiceflow-demo-api
+    runtime: docker
+    plan: free
+    repo: https://github.com/vldzio/conversational-agent
+    branch: demo-ready
+    rootDir: deploy/render
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    envVars:
+      - { key: ENCRYPTION_KEY, sync: false }        # 64 hex chars (openssl rand -hex 32)
+      - { key: FREEAPI_CONFIG_JSON, sync: false }   # contents of workspace-demo.config.json
+      - { key: LANGSMITH_API_KEY, sync: false }
+      - { key: UPSTASH_REDIS_REST_URL, sync: false }
+      - { key: UPSTASH_REDIS_REST_TOKEN, sync: false }
+      - { key: DEEPGRAM_API_KEY, sync: false }      # voice; without it replies use the browser voice
+      # Voice limits are in characters: per visitor per minute / per day, and for everyone per day (UTC).
+      - { key: TTS_CACHE_BYTES, value: "16777216" }
+      - { key: TTS_PER_IP_PER_MIN, value: "800" }
+      - { key: TTS_PER_IP_DAILY, value: "8000" }
+      - { key: TTS_GLOBAL_DAILY, value: "150000" }
+      - { key: SUPPORT_EMAIL, sync: false }         # shown to callers who ask to cancel an order
+      - { key: CORS_ORIGINS, sync: false }          # the Vercel origin
+      # Limits are in credits (1 credit = about 1 LLM call; a turn costs 2, a prepared voice turn 1 + 1).
+      # Which header carries the real visitor IP (Render is behind Cloudflare). Check GET /whoami after deploying.
+      - { key: CLIENT_IP_HEADER, value: "cf-connecting-ip" }
+      - { key: RL_PER_IP_PER_MIN, value: "20" }
+      - { key: RL_PER_IP_DAILY, value: "40" }
+      - { key: RL_GLOBAL_DAILY, value: "1000" }
+      # Models tried in order; the first should be the fastest one your provider keys can reach.
+      - { key: LLM_MODELS, value: "qwen3.8-27b,gpt-oss-120b@low,gpt-oss-20b@low,auto" }
+      - { key: SPECULATE, value: "1" }

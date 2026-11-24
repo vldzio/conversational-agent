@@ -1,87 +1,86 @@
-# VoiceFlow — conversational inventory demo
+# VoiceFlow — voice-driven sales assistant
 
-**A local, voice-driven sales assistant.** VoiceFlow records a short microphone utterance, transcribes it with Google Cloud Speech-to-Text, uses a Hugging Face-hosted language model to extract the requested product and quantity, checks a CSV inventory, and speaks the answer back with Google Cloud Text-to-Speech. A Streamlit interface ties the interaction together as a **simulated sales call**.
+**A voice ordering assistant that separates language understanding from business logic.** The caller speaks an order, a language model extracts the product and quantity, plain Python checks and updates the inventory, and the agent answers out loud. The model never decides what is in stock.
 
-The design splits **language understanding** from **deterministic action**: the LLM interprets the customer's words, while plain Python performs the stock check and inventory update.
+**Live demo:** [conversational-agent-rouge.vercel.app](https://conversational-agent-rouge.vercel.app) (simulated call, typing works too)
 
 ```text
-Local microphone (5-second recording)
-      ↓ Google Cloud Speech-to-Text
+Caller's speech
+      ↓ speech-to-text
 Transcript
-      ↓ Hugging Face Mixtral endpoint: product + quantity JSON
-CSV inventory check → stock/alternative/confirmation response
-      ↓ Google Cloud Text-to-Speech
-MP3 playback via pygame
+      ↓ LLM: extract {product, quantity} (schema-validated)
+Inventory check in Python → in stock / not enough / not found / follow-up question
+      ↓ reply sentence
+Text-to-speech → caller hears the answer
 ```
 
-## Capabilities
+VoiceFlow runs in two forms:
 
-- Captures short spoken requests and transcribes them to English text.
-- Parses requests such as “I want two wireless earbuds” into product and quantity.
-- Checks `inventory.csv` and replies with an out-of-stock, insufficient-stock, or order-confirmation message. Confirmed orders update the quantity-on-hand and quantity-sold columns.
-- Synthesizes the reply as an MP3 using a Google Cloud WaveNet voice and plays it back.
-- Provides a Streamlit **Simulate Call** UI for running the whole conversation in one click.
+| | Local app (`streamlit_ui.py`) | Web demo (`demo/` + `demo_api/`) |
+| --- | --- | --- |
+| Speech in | Microphone + Google Cloud Speech-to-Text | Browser Web Speech API, or typing |
+| Understanding | Hugging Face endpoint via LangChain (`model.py`) | LLM via OpenAI-compatible gateway, schema-validated |
+| Inventory | `inventory.csv` | Per-visitor copy of `inventory.csv` |
+| Speech out | Google Cloud Text-to-Speech (WaveNet) | Streamed Deepgram Aura-2 voice, browser voice as fallback |
+| UI | Streamlit "Simulate Call" | Static call-simulator page (Vercel) + FastAPI backend (Render) |
 
-## Getting started
+## Features
 
-**Requirements:** Python 3.10+, a microphone and speakers, a Google Cloud project with Speech-to-Text and Text-to-Speech enabled, a service-account JSON key, and a Hugging Face access token. PyAudio needs the PortAudio library on your system (`brew install portaudio` on macOS, `sudo apt install portaudio19-dev` on Debian/Ubuntu; the Windows wheel includes it).
+- Understands requests such as “I want two wireless earbuds” and resolves loose product names (“speakers”) against the catalogue in code.
+- Handles incomplete orders with a follow-up question (which product? how many?) and remembers what it asked.
+- Replies with stock confirmations, shortfalls, or alternatives; confirmed orders update the inventory.
+- Web demo streams each turn (parsed → result → spoken reply), prepares likely replies while the caller is still talking, and caches synthesized audio so repeated lines play instantly.
+- Every LLM call in the web demo is traced to LangSmith; visitors get a daily allowance or can bring their own key.
 
-### 1. Install
+## Run the local app
+
+Requires Python 3.10+, a microphone and speakers, a Google Cloud service account with Speech-to-Text and Text-to-Speech enabled, and a Hugging Face token. PyAudio may also need the PortAudio library for your OS.
 
 ```bash
 git clone https://github.com/vldzio/conversational-agent.git
 cd conversational-agent
 python -m venv .venv
-source .venv/bin/activate        # Windows PowerShell: .venv\Scripts\Activate.ps1
+# macOS/Linux: source .venv/bin/activate
+# Windows PowerShell: .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
 
-### 2. Configure credentials
-
-VoiceFlow reads two environment variables (see `.env.example`):
-
-| Variable | Value |
-| --- | --- |
-| `HUGGINGFACEHUB_API_TOKEN` | Your Hugging Face access token |
-| `GOOGLE_APPLICATION_CREDENTIALS` | Absolute path to your Google Cloud service-account JSON key |
-
-macOS / Linux:
+Set your credentials (see `.env.example`):
 
 ```bash
-export HUGGINGFACEHUB_API_TOKEN="hf_..."
+export HUGGINGFACEHUB_API_TOKEN="your_hugging_face_token"
 export GOOGLE_APPLICATION_CREDENTIALS="/absolute/path/to/service-account.json"
 ```
 
-Windows PowerShell:
-
-```powershell
-$env:HUGGINGFACEHUB_API_TOKEN = "hf_..."
-$env:GOOGLE_APPLICATION_CREDENTIALS = "C:\path\to\service-account.json"
-```
-
-### 3. Run
+On Windows PowerShell use `$env:HUGGINGFACEHUB_API_TOKEN="..."` and `$env:GOOGLE_APPLICATION_CREDENTIALS="C:\path\to\service-account.json"`.
 
 ```bash
 streamlit run streamlit_ui.py
 ```
 
-Enter a phone number, click **Simulate Call**, and speak your order when prompted (for example, “I'd like to order two wireless chargers”). For a terminal-only run of the same pipeline, use `python tester.py`.
+Click **Simulate Call** and speak your order. Audio is recorded and played on the machine running Streamlit, and confirmed orders update `inventory.csv`.
 
-**Notes:** audio is recorded and played on the machine running Streamlit. Confirmed orders write back to `inventory.csv`, so keep a copy if you want to reset stock levels between runs.
+## Run the web demo locally
+
+```bash
+pip install -r demo_api/requirements.txt pytest
+pytest tests                                   # demo API tests, LLM stubbed
+uvicorn demo_api.app:app --port 8150
+```
+
+Set `API_URL` in `demo/config.js` to `http://localhost:8150`, then serve `demo/` with `python -m http.server`. The API needs an OpenAI-compatible endpoint (`LLM_BASE_URL`, `LLM_API_KEY`); `DEEPGRAM_API_KEY` enables the streamed voice. Deployment recipes are in `deploy/render/` and `vercel.json`.
 
 ## Project structure
 
-| File | Responsibility |
+| Path | Purpose |
 | --- | --- |
-| `streamlit_ui.py` | Simulated call UI; orchestrates audio → agent → speech |
-| `audiotranscriber.py` | PyAudio capture and Google Speech-to-Text transcription |
-| `model.py` | Hugging Face endpoint, request parsing, CSV-backed inventory action |
-| `tts_for_model.py` | Google Cloud Text-to-Speech synthesis to `output.mp3` |
-| `inventory.csv` | Example products and stock counts |
-| `tester.py` | Command-line audio → agent → speech run |
-
-## Roadmap
-
-- Browser-side audio capture
-- Telephony integration for real calls
-- Multi-turn conversations and order adjustments
+| `streamlit_ui.py` | Local simulated-call UI: audio → agent → speech |
+| `audiotranscriber.py` | Microphone capture and Google Speech-to-Text |
+| `model.py` | Hugging Face endpoint, order parsing, inventory action |
+| `tts_for_model.py` | Google Text-to-Speech synthesis |
+| `tester.py` | Command-line audio → agent → speech test |
+| `inventory.csv` | Sample products and stock |
+| `demo_api/` | FastAPI backend: order parsing, inventory rules, streaming turns, TTS relay, rate limits |
+| `demo/` | Browser call simulator |
+| `deploy/render/` | Render deployment blueprint |
+| `tests/` | Web demo API tests |
